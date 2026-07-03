@@ -29,6 +29,11 @@ DIRECTIONS: Dict[str, Point] = {
 HEAD_TO_HEAD_PENALTY = 10_000
 # Below this health we start actively steering toward food.
 HUNGRY_THRESHOLD = 50
+# Keep one-turn adversarial search bounded for games with many snakes.
+MAX_ENEMY_SCENARIOS = 64
+ENEMY_BRANCHING = 2
+# Fallback heuristic search depth, measured in our future moves.
+HEURISTIC_MINIMAX_DEPTH = 2
 
 
 def get_info() -> Dict[str, str]:
@@ -55,50 +60,35 @@ def choose_move(game_state: Dict) -> str:
 
 
 def choose_move_heuristic(game_state: Dict) -> str:
-    """Return the next move for the current turn."""
-    board = game_state["board"]
-    you = game_state["you"]
-    width: int = board["width"]
-    height: int = board["height"]
+    """Return the next move with a paranoid minimax-style heuristic.
 
-    head: Point = (you["head"]["x"], you["head"]["y"])
-    my_length: int = you["length"]
-    health: int = you["health"]
+    Battlesnake turns are simultaneous, so the heuristic uses the "paranoid"
+    adaptation from minimax: after each candidate move, assume the other snakes
+    can choose from their strongest replies and score our worst likely outcome.
+    Terminal boards are evaluated by space control, Voronoi territory, tail
+    reachability, health, food pressure, and head-to-head risk.
+    """
+    candidates = _safe_moves(game_state)
+    if not candidates:
+        return "up"
 
-    occupied = _occupied_cells(board["snakes"])
-    danger = _head_to_head_cells(board["snakes"], you["id"], my_length)
-    foods = [(f["x"], f["y"]) for f in board["food"]]
-
-    best_move = None
+    best_move = candidates[0]
     best_score = float("-inf")
 
-    for move, (dx, dy) in DIRECTIONS.items():
-        nxt = (head[0] + dx, head[1] + dy)
-
-        if not _in_bounds(nxt, width, height):
-            continue
-        if nxt in occupied:
-            continue
-
-        # Reachable open space from this cell. If we can't fit our own body in
-        # the space we'd be moving into, we're about to trap ourselves.
-        space = _flood_fill(nxt, occupied, width, height, limit=my_length + 1)
-        score = float(space)
-
-        if nxt in danger:
-            score -= HEAD_TO_HEAD_PENALTY
-
-        # When hungry, nudge toward the closest food.
-        if foods and health < HUNGRY_THRESHOLD:
-            nearest = min(_manhattan(nxt, f) for f in foods)
-            score += (width + height - nearest) * 2
+    for move in candidates:
+        score = _paranoid_minimax_after_move(
+            game_state,
+            move,
+            depth=HEURISTIC_MINIMAX_DEPTH,
+            alpha=best_score,
+            beta=float("inf"),
+        )
 
         if score > best_score:
             best_score = score
             best_move = move
 
-    # No safe move found -> we're cornered. Move up and hope for the best.
-    return best_move or "up"
+    return best_move
 
 
 def _occupied_cells(snakes: List[Dict]) -> Set[Point]:
@@ -319,38 +309,400 @@ _MODEL: Dict = {
 
 
 def choose_move_model(game_state: Dict) -> Optional[str]:
-    """Score each legal move with the trained model; return the best.
+    """Score safe moves with the model plus one-turn enemy simulations.
 
     Returns ``None`` (so the caller falls back to the heuristic) if the model
     isn't available or the snake is trapped with no legal move.
     """
-    legal = _legal_moves(game_state)
-    if not legal:
+    candidates = _safe_moves(game_state)
+    if not candidates:
         return None
 
-    names = _MODEL["feature_names"]
-    mean = _MODEL["mean"]
-    std = _MODEL["std"]
-    coef = _MODEL["coef"]
-    intercept = _MODEL["intercept"]
-
     best_move, best_score = None, float("-inf")
-    for move in legal:
-        feats = _candidate_features(game_state, move)
-        score = intercept
-        for i, name in enumerate(names):
-            z = (feats.get(name, 0.0) - mean[i]) / std[i] if std[i] else 0.0
-            score += coef[i] * z
+    for move in candidates:
+        score = _linear_model_score(game_state, move)
+        score += 0.18 * _adversarial_score(game_state, move)
+        score += _immediate_tactical_score(game_state, move)
         if score > best_score:
             best_score, best_move = score, move
     return best_move
 
 
-def _legal_moves(game_state: Dict) -> List[str]:
+def _linear_model_score(game_state: Dict, move: str) -> float:
+    names = _MODEL["feature_names"]
+    mean = _MODEL["mean"]
+    std = _MODEL["std"]
+    coef = _MODEL["coef"]
+    score = _MODEL["intercept"]
+    feats = _candidate_features(game_state, move)
+    for i, name in enumerate(names):
+        z = (feats.get(name, 0.0) - mean[i]) / std[i] if std[i] else 0.0
+        score += coef[i] * z
+    return score
+
+
+def _safe_moves(game_state: Dict) -> List[str]:
+    """Prefer moves that survive common multi-snake traps.
+
+    The filter is staged so a cornered snake still returns *some* legal move
+    instead of becoming overly strict and falling back to a hardcoded direction.
+    """
+    legal = _legal_moves(game_state)
+    if len(legal) <= 1:
+        return legal
+
+    board = game_state["board"]
+    you = game_state["you"]
+    width, height = board["width"], board["height"]
+    my_length = you["length"]
+    head = _snake_head(you)
+    occupied = _occupied_cells(board["snakes"])
+    if you["body"]:
+        occupied.discard(_snake_tail(you))
+    danger = _head_to_head_cells(board["snakes"], you["id"], my_length)
+
+    scored = []
+    for move in legal:
+        nxt = _step(head, move)
+        space = _flood_fill(nxt, occupied, width, height, limit=width * height)
+        escape = _escape_count(nxt, occupied, width, height)
+        in_h2h_danger = nxt in danger
+        score = space + escape * 3
+        if space < my_length:
+            score -= (my_length - space) * 4
+        if in_h2h_danger:
+            score -= HEAD_TO_HEAD_PENALTY
+        scored.append((move, score, space, escape, in_h2h_danger))
+
+    no_head_to_head = [move for move, _, _, _, danger_hit in scored if not danger_hit]
+    if no_head_to_head:
+        scored = [item for item in scored if item[0] in no_head_to_head]
+
+    enough_space = [move for move, _, space, _, _ in scored if space >= max(3, min(my_length, 10))]
+    if enough_space:
+        scored = [item for item in scored if item[0] in enough_space]
+
+    with_escape = [move for move, _, _, escape, _ in scored if escape > 0]
+    if with_escape:
+        scored = [item for item in scored if item[0] in with_escape]
+
+    scored.sort(key=lambda item: item[1], reverse=True)
+    return [move for move, *_ in scored]
+
+
+def _immediate_tactical_score(game_state: Dict, move: str) -> float:
+    board = game_state["board"]
+    you = game_state["you"]
+    width, height = board["width"], board["height"]
+    head = _snake_head(you)
+    nxt = _step(head, move)
+    foods = {(f["x"], f["y"]) for f in board["food"]}
+    enemies = [s for s in board["snakes"] if s["id"] != you["id"]]
+    occupied = _occupied_cells(board["snakes"])
+    if you["body"]:
+        occupied.discard(_snake_tail(you))
+
+    score = 0.0
+    score += _escape_count(nxt, occupied, width, height) * 8.0
+    score += min(nxt[0], width - 1 - nxt[0], nxt[1], height - 1 - nxt[1]) * 3.0
+
+    if foods:
+        nearest_food = min(_manhattan(nxt, food) for food in foods)
+        if you["health"] < HUNGRY_THRESHOLD:
+            score += (width + height - nearest_food) * 4.0
+        elif nxt in foods and you["length"] <= max((e["length"] for e in enemies), default=0) + 1:
+            score += 12.0
+
+    for enemy in enemies:
+        dist = _manhattan(nxt, _snake_head(enemy))
+        if enemy["length"] >= you["length"] and dist <= 2:
+            score -= (3 - dist) * 35.0
+        elif you["length"] > enemy["length"] and dist <= 2:
+            score += (3 - dist) * 18.0
+    return score
+
+
+def _adversarial_score(game_state: Dict, move: str) -> float:
+    scenarios = _enemy_move_scenarios(game_state)
+    if not scenarios:
+        simulated = _simulate_turn(game_state, move, {})
+        return _scenario_score(game_state, simulated)
+
+    scores = []
+    for enemy_moves in scenarios:
+        simulated = _simulate_turn(game_state, move, enemy_moves)
+        scores.append(_scenario_score(game_state, simulated))
+
+    worst = min(scores)
+    avg = sum(scores) / len(scores)
+    return worst * 0.70 + avg * 0.30
+
+
+def _paranoid_minimax_after_move(
+    game_state: Dict,
+    move: str,
+    depth: int,
+    alpha: float,
+    beta: float,
+) -> float:
+    """Evaluate ``move`` by letting enemy scenarios minimize our future score."""
+    scenarios = _enemy_move_scenarios(game_state)
+    if not scenarios:
+        scenarios = [{}]
+
+    worst_score = float("inf")
+    for enemy_moves in scenarios:
+        simulated = _simulate_turn(game_state, move, enemy_moves)
+        if simulated["you"] is None or depth <= 1:
+            score = _scenario_score(game_state, simulated)
+        else:
+            score = _paranoid_minimax(simulated, depth - 1, alpha, beta)
+
+        worst_score = min(worst_score, score)
+        beta = min(beta, worst_score)
+        if beta <= alpha:
+            break
+
+    return worst_score
+
+
+def _paranoid_minimax(game_state: Dict, depth: int, alpha: float, beta: float) -> float:
+    """Maximize our score while treating all other snakes as one adversary."""
+    if game_state["you"] is None:
+        return -1_000_000.0
+    if depth <= 0:
+        return _scenario_score(game_state, game_state)
+
+    candidates = _safe_moves(game_state)
+    if not candidates:
+        return -1_000_000.0
+
+    best_score = float("-inf")
+    for move in candidates:
+        score = _paranoid_minimax_after_move(game_state, move, depth, alpha, beta)
+        best_score = max(best_score, score)
+        alpha = max(alpha, best_score)
+        if alpha >= beta:
+            break
+
+    return best_score
+
+
+def _enemy_move_scenarios(game_state: Dict) -> List[Dict[str, str]]:
+    enemies = [s for s in game_state["board"]["snakes"] if s["id"] != game_state["you"]["id"]]
+    scenarios: List[Tuple[Dict[str, str], float]] = [({}, 0.0)]
+
+    for enemy in enemies:
+        ranked_moves = _rank_enemy_moves(game_state, enemy)[:ENEMY_BRANCHING]
+        if not ranked_moves:
+            continue
+        next_scenarios: List[Tuple[Dict[str, str], float]] = []
+        for partial, partial_score in scenarios:
+            for enemy_move, enemy_score in ranked_moves:
+                merged = dict(partial)
+                merged[enemy["id"]] = enemy_move
+                next_scenarios.append((merged, partial_score + enemy_score))
+        next_scenarios.sort(key=lambda item: item[1], reverse=True)
+        scenarios = next_scenarios[:MAX_ENEMY_SCENARIOS]
+
+    return [moves for moves, _ in scenarios]
+
+
+def _rank_enemy_moves(game_state: Dict, enemy: Dict) -> List[Tuple[str, float]]:
     board = game_state["board"]
     width, height = board["width"], board["height"]
-    head = (game_state["you"]["head"]["x"], game_state["you"]["head"]["y"])
+    moves = _legal_moves_for_snake(game_state, enemy)
+    if not moves:
+        return []
+
     occupied = _occupied_cells(board["snakes"])
+    if enemy["body"]:
+        occupied.discard(_snake_tail(enemy))
+    foods = [(f["x"], f["y"]) for f in board["food"]]
+    danger = _head_to_head_cells(board["snakes"], enemy["id"], enemy["length"])
+    head = _snake_head(enemy)
+
+    ranked = []
+    for move in moves:
+        nxt = _step(head, move)
+        space = _flood_fill(nxt, occupied, width, height, limit=width * height)
+        escape = _escape_count(nxt, occupied, width, height)
+        score = float(space) + escape * 5.0
+        score += min(nxt[0], width - 1 - nxt[0], nxt[1], height - 1 - nxt[1]) * 2.0
+        if foods and enemy["health"] < HUNGRY_THRESHOLD:
+            nearest = min(_manhattan(nxt, food) for food in foods)
+            score += (width + height - nearest) * 3.0
+        if nxt in danger:
+            score -= HEAD_TO_HEAD_PENALTY
+        ranked.append((move, score))
+
+    ranked.sort(key=lambda item: item[1], reverse=True)
+    return ranked
+
+
+def _simulate_turn(game_state: Dict, my_move: str, enemy_moves: Dict[str, str]) -> Dict:
+    board = game_state["board"]
+    foods = {(f["x"], f["y"]) for f in board["food"]}
+    moves = {game_state["you"]["id"]: my_move, **enemy_moves}
+
+    moved = []
+    for snake in board["snakes"]:
+        move = moves.get(snake["id"])
+        if move is None:
+            continue
+        new_head = _step(_snake_head(snake), move)
+        ate = new_head in foods
+        body_points = [new_head] + [(seg["x"], seg["y"]) for seg in snake["body"]]
+        if not ate:
+            body_points = body_points[:-1]
+        health = 100 if ate else snake["health"] - 1
+        if health <= 0:
+            continue
+        moved.append(
+            {
+                **snake,
+                "health": health,
+                "body": [{"x": x, "y": y} for x, y in body_points],
+                "head": {"x": new_head[0], "y": new_head[1]},
+                "length": len(body_points),
+                "_ate": ate,
+            }
+        )
+
+    eliminated: Set[str] = set()
+    heads: Dict[Point, List[Dict]] = {}
+    for snake in moved:
+        heads.setdefault(_snake_head(snake), []).append(snake)
+
+    for same_cell in heads.values():
+        if len(same_cell) <= 1:
+            continue
+        max_length = max(s["length"] for s in same_cell)
+        winners = [s for s in same_cell if s["length"] == max_length]
+        if len(winners) != 1:
+            eliminated.update(s["id"] for s in same_cell)
+        else:
+            eliminated.update(s["id"] for s in same_cell if s["id"] != winners[0]["id"])
+
+    body_cells: Set[Point] = set()
+    for snake in moved:
+        for seg in snake["body"][1:]:
+            body_cells.add((seg["x"], seg["y"]))
+
+    for snake in moved:
+        if snake["id"] in eliminated:
+            continue
+        if _snake_head(snake) in body_cells:
+            eliminated.add(snake["id"])
+
+    survivors = []
+    consumed_food: Set[Point] = set()
+    for snake in moved:
+        if snake["id"] in eliminated:
+            continue
+        if snake.pop("_ate", False):
+            consumed_food.add(_snake_head(snake))
+        survivors.append(snake)
+
+    next_food = [food for food in foods if food not in consumed_food]
+    my_next = next((s for s in survivors if s["id"] == game_state["you"]["id"]), None)
+    return {
+        **game_state,
+        "turn": game_state.get("turn", 0) + 1,
+        "board": {
+            **board,
+            "snakes": survivors,
+            "food": [{"x": x, "y": y} for x, y in next_food],
+        },
+        "you": my_next,
+    }
+
+
+def _scenario_score(previous_state: Dict, simulated_state: Dict) -> float:
+    you = simulated_state["you"]
+    if you is None:
+        return -1_000_000.0
+
+    board = simulated_state["board"]
+    width, height = board["width"], board["height"]
+    enemies = [s for s in board["snakes"] if s["id"] != you["id"]]
+    previous_enemy_count = len(previous_state["board"]["snakes"]) - 1
+    killed_enemies = previous_enemy_count - len(enemies)
+
+    head = _snake_head(you)
+    occupied = _occupied_cells(board["snakes"])
+    if you["body"]:
+        occupied.discard(_snake_tail(you))
+    open_space = _flood_fill(head, occupied, width, height, limit=width * height)
+    escape = _escape_count(head, occupied, width, height)
+
+    enemy_heads = [_snake_head(enemy) for enemy in enemies]
+    my_dist = _bfs_dist([head], occupied, width, height)
+    enemy_dist = _bfs_dist(enemy_heads, occupied, width, height) if enemy_heads else {}
+    territory = sum(1 for cell, md in my_dist.items() if md < enemy_dist.get(cell, _BIG))
+
+    my_tail = _snake_tail(you)
+    reaches_tail = 1.0 if my_tail in _bfs_dist([head], occupied - {my_tail}, width, height) else 0.0
+    length_lead = you["length"] - max((enemy["length"] for enemy in enemies), default=0)
+
+    score = 0.0
+    score += open_space * 3.5
+    score += territory * 6.0
+    score += escape * 25.0
+    score += reaches_tail * 80.0
+    score += length_lead * 18.0
+    score += you["health"] * 0.6
+    score += killed_enemies * 180.0
+
+    foods = [(f["x"], f["y"]) for f in board["food"]]
+    if foods:
+        nearest_food = min(_manhattan(head, food) for food in foods)
+        if you["health"] < HUNGRY_THRESHOLD:
+            score += (width + height - nearest_food) * 8.0
+        else:
+            score -= nearest_food * 0.8
+
+    danger = _head_to_head_cells(board["snakes"], you["id"], you["length"])
+    if head in danger:
+        score -= HEAD_TO_HEAD_PENALTY
+    return score
+
+
+def _snake_head(snake: Dict) -> Point:
+    return snake["head"]["x"], snake["head"]["y"]
+
+
+def _snake_tail(snake: Dict) -> Point:
+    tail = snake["body"][-1]
+    return tail["x"], tail["y"]
+
+
+def _step(point: Point, move: str) -> Point:
+    dx, dy = DIRECTIONS[move]
+    return point[0] + dx, point[1] + dy
+
+
+def _escape_count(point: Point, occupied: Set[Point], width: int, height: int) -> int:
+    return sum(
+        1
+        for dx, dy in DIRECTIONS.values()
+        if _in_bounds((point[0] + dx, point[1] + dy), width, height)
+        and (point[0] + dx, point[1] + dy) not in occupied
+    )
+
+
+def _legal_moves(game_state: Dict) -> List[str]:
+    return _legal_moves_for_snake(game_state, game_state["you"])
+
+
+def _legal_moves_for_snake(game_state: Dict, snake: Dict) -> List[str]:
+    board = game_state["board"]
+    width, height = board["width"], board["height"]
+    head = (snake["head"]["x"], snake["head"]["y"])
+    occupied = _occupied_cells(board["snakes"])
+    if snake["body"]:
+        tail = snake["body"][-1]
+        occupied.discard((tail["x"], tail["y"]))
     return [
         move
         for move, (dx, dy) in DIRECTIONS.items()
