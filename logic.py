@@ -59,7 +59,7 @@ _ILLEGAL_SCORE = -10_000_000.0
 _BIG_DISTANCE = 10_000
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Snake:
     id: str
     body: Tuple[Point, ...]
@@ -78,7 +78,7 @@ class Snake:
         return len(self.body)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class State:
     width: int
     height: int
