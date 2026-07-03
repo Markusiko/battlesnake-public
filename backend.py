@@ -77,12 +77,52 @@ def safe_move_or_fallback(game_state: Dict[str, Any], move: str) -> str:
     Returns:
         Safe move when one exists.
     """
-    if is_immediately_safe_move(game_state, move):
+    safe_moves = [candidate for candidate in VALID_MOVES if is_immediately_safe_move(game_state, candidate)]
+    if not safe_moves:
+        return move if move in VALID_MOVES else "up"
+    if move in safe_moves and not is_edge_chasing_move(game_state, move, safe_moves):
         return move
-    for fallback_move in ("up", "right", "down", "left"):
-        if is_immediately_safe_move(game_state, fallback_move):
-            return fallback_move
-    return move if move in VALID_MOVES else "up"
+    return max(safe_moves, key=lambda candidate: move_safety_score(game_state, candidate))
+
+
+def is_edge_chasing_move(game_state: Dict[str, Any], move: str, safe_moves: list[str]) -> bool:
+    """Return True when move hugs a wall while safer interior moves exist.
+
+    Args:
+        game_state: Battlesnake request payload.
+        move: Candidate move.
+        safe_moves: Moves that pass immediate safety.
+
+    Returns:
+        True if candidate should be replaced by a more central safe move.
+    """
+    candidate_score = move_safety_score(game_state, move)
+    best_score = max(move_safety_score(game_state, candidate) for candidate in safe_moves)
+    return best_score >= candidate_score + 2
+
+
+def move_safety_score(game_state: Dict[str, Any], move: str) -> int:
+    """Score next cell by wall distance and local exits.
+
+    Args:
+        game_state: Battlesnake request payload.
+        move: Candidate move.
+
+    Returns:
+        Higher score means less likely to run straight into an edge.
+    """
+    board = game_state["board"]
+    you = game_state["you"]
+    head = (you["head"]["x"], you["head"]["y"])
+    dx, dy = MOVE_DELTAS[move]
+    nxt = (head[0] + dx, head[1] + dy)
+    wall_distance = min(nxt[0], board["width"] - 1 - nxt[0], nxt[1], board["height"] - 1 - nxt[1])
+    exits = 0
+    for ddx, ddy in MOVE_DELTAS.values():
+        neighbor = (nxt[0] + ddx, nxt[1] + ddy)
+        if 0 <= neighbor[0] < board["width"] and 0 <= neighbor[1] < board["height"]:
+            exits += 1
+    return wall_distance * 4 + exits
 
 
 def is_immediately_safe_move(game_state: Dict[str, Any], move: str) -> bool:
