@@ -18,8 +18,8 @@
 // MAX_VORONOI assesses boards more accurately but slows down search. a larger
 // MAX_DEPTH is more universal but can cause latency spikes in the endgame. a
 // larger MAX_SNAKES is more flexible but slows down search.
-#define TOTAL_TIME 320 / 1000  // wrapper budget below game engine timeout
-#define SEARCH_TIME 250 / 1000 // time at which a search is cut off, in seconds
+#define TOTAL_TIME 240 / 1000  // wrapper budget below game engine timeout
+#define SEARCH_TIME 180 / 1000 // time at which a search is cut off, in seconds
 #define CHECK_DEPTH 8    // depth above which to check clock() < SEARCH_TIME
 #define MAX_VORONOI 32   // number of Voronoi propagation steps to perform
 #define MAX_DEPTH 64     // max search depth, for allocating buffers

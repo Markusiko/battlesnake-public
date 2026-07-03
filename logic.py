@@ -45,7 +45,7 @@ def get_info() -> Dict[str, str]:
         "color": "#1d4ed8",
         "head": "smart-caterpillar",
         "tail": "weight",
-        "version": "0.3.0",
+        "version": "0.3.1",
     }
 
 

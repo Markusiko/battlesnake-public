@@ -25,8 +25,14 @@ log = logging.getLogger("battlesnake")
 
 ROOT_DIR = Path(__file__).resolve().parent
 SANDWORM_MOVE_PATH = Path(os.environ.get("SANDWORM_MOVE_PATH", ROOT_DIR / "sandworm" / "bin" / "move"))
-SANDWORM_TIMEOUT_SECONDS = 0.34
+SANDWORM_TIMEOUT_SECONDS = 0.26
 VALID_MOVES = {"up", "down", "left", "right"}
+MOVE_DELTAS = {
+    "up": (0, 1),
+    "down": (0, -1),
+    "left": (-1, 0),
+    "right": (1, 0),
+}
 
 
 def choose_move_sandworm(game_state: Dict[str, Any]) -> str:
@@ -61,6 +67,58 @@ def choose_move_sandworm(game_state: Dict[str, Any]) -> str:
     return move
 
 
+def safe_move_or_fallback(game_state: Dict[str, Any], move: str) -> str:
+    """Return move if immediately safe; otherwise choose any safe move.
+
+    Args:
+        game_state: Battlesnake request payload.
+        move: Candidate move.
+
+    Returns:
+        Safe move when one exists.
+    """
+    if is_immediately_safe_move(game_state, move):
+        return move
+    for fallback_move in ("up", "right", "down", "left"):
+        if is_immediately_safe_move(game_state, fallback_move):
+            return fallback_move
+    return move if move in VALID_MOVES else "up"
+
+
+def is_immediately_safe_move(game_state: Dict[str, Any], move: str) -> bool:
+    """Check walls and occupied cells for the next move.
+
+    Args:
+        game_state: Battlesnake request payload.
+        move: Candidate move.
+
+    Returns:
+        True if the move does not immediately hit a wall or body.
+    """
+    if move not in MOVE_DELTAS:
+        return False
+
+    board = game_state["board"]
+    you = game_state["you"]
+    head = (you["head"]["x"], you["head"]["y"])
+    dx, dy = MOVE_DELTAS[move]
+    nxt = (head[0] + dx, head[1] + dy)
+    if not (0 <= nxt[0] < board["width"] and 0 <= nxt[1] < board["height"]):
+        return False
+
+    blocked = set()
+    for snake in board["snakes"]:
+        body = snake["body"]
+        for segment in body:
+            blocked.add((segment["x"], segment["y"]))
+        if len(body) >= 2:
+            tail = (body[-1]["x"], body[-1]["y"])
+            before_tail = (body[-2]["x"], body[-2]["y"])
+            if tail != before_tail:
+                blocked.discard(tail)
+    return nxt not in blocked
+
+
 @app.get("/")
 def on_info():
     return get_info()
@@ -83,6 +141,11 @@ def on_move():
         log.warning("SANDWORM FALLBACK turn=%s error=%s", game_state["turn"], exc)
         move = choose_move(game_state)
         engine = "python"
+    safe_move = safe_move_or_fallback(game_state, move)
+    if safe_move != move:
+        log.warning("UNSAFE MOVE REPLACED turn=%s %s -> %s", game_state["turn"], move, safe_move)
+        move = safe_move
+        engine = f"{engine}-safe"
     log.info("MOVE turn=%s -> %s", game_state["turn"], move)
     return {"move": move, "shout": engine}
 
