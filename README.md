@@ -8,15 +8,21 @@ version uses a pretrained model checkpoint to choose moves.
 Each turn, `logic.py`:
 
 - Gets legal moves for the current board.
+- Applies a safety filter to avoid preventable head-to-head losses and
+  one-turn traps.
 - Calculates per-move features.
-- Scores each move with a pure-Python linear model.
+- Scores each safe move with a pure-Python linear model.
 - Returns the highest-scoring move.
 
+The model is used for ranking, not for basic survival guarantees. If every move
+is risky, the bot keeps the least-bad legal candidates instead of failing.
 
 ## Files
 
 - `backend.py` — Battlesnake HTTP server with `/`, `/start`, `/move`, and `/end`.
-- `logic.py` — embedded checkpoint, feature extraction, move scoring, and fallback logic.
+- `logic.py` — embedded checkpoint, feature extraction, move scoring, safety
+  filters, and fallback logic.
+- `test_logic.py` — lightweight unit tests for basic move safety.
 - `requirements.txt` — runtime dependencies.
 - `render.yaml` — Render deployment config.
 
@@ -35,6 +41,12 @@ battlesnake play -W 11 -H 11 \
   -n ml -u http://localhost:8000 \
   -g solo \
   -v -c -d 300
+```
+
+## Run Tests
+
+```bash
+python3 -m unittest test_logic.py
 ```
 
 ## Deploy to Render
