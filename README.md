@@ -1,22 +1,25 @@
-# Battlesnake ML Inference Bot
+# Battlesnake Minimax Bot
 
 A [Battlesnake](https://play.battlesnake.com) written in Python and Flask. This
-version uses a pretrained model checkpoint to choose moves.
+version uses a shallow paranoid minimax search with a Voronoi-style board
+evaluation. A pretrained linear model and a hand-written heuristic remain as
+fallbacks.
 
 ## What It Does
 
 Each turn, `logic.py`:
 
 - Gets legal moves for the current board.
-- Calculates per-move features.
-- Scores each move with a pure-Python linear model.
+- Simulates worst-case enemy replies.
+- Scores positions by reachable space, length, health, food, and head-to-head
+  risk.
 - Returns the highest-scoring move.
 
 
 ## Files
 
 - `backend.py` — Battlesnake HTTP server with `/`, `/start`, `/move`, and `/end`.
-- `logic.py` — embedded checkpoint, feature extraction, move scoring, and fallback logic.
+- `logic.py` — minimax search, Voronoi evaluation, embedded checkpoint, and fallback logic.
 - `requirements.txt` — runtime dependencies.
 - `render.yaml` — Render deployment config.
 
