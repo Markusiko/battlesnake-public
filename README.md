@@ -1,25 +1,23 @@
-# Battlesnake Minimax Bot
+# Battlesnake Sandworm Bot
 
 A [Battlesnake](https://play.battlesnake.com) written in Python and Flask. This
-version uses a shallow paranoid minimax search with a Voronoi-style board
-evaluation. A pretrained linear model and a hand-written heuristic remain as
-fallbacks.
+version uses the vendored [Sandworm](sandworm/README.md) C move engine. Python
+keeps the HTTP API and fallback logic.
 
 ## What It Does
 
-Each turn, `logic.py`:
+Each turn, `backend.py`:
 
-- Gets legal moves for the current board.
-- Simulates worst-case enemy replies.
-- Scores positions by reachable space, length, health, food, and head-to-head
-  risk.
-- Returns the highest-scoring move.
+- Receives a Battlesnake move request through `backend.py`.
+- Sends the raw request JSON to the compiled Sandworm binary.
+- Falls back to Python logic if Sandworm fails or times out.
 
 
 ## Files
 
 - `backend.py` — Battlesnake HTTP server with `/`, `/start`, `/move`, and `/end`.
-- `logic.py` — minimax search, Voronoi evaluation, embedded checkpoint, and fallback logic.
+- `logic.py` — Python fallback logic and snake appearance.
+- `sandworm/` — vendored Sandworm C move engine.
 - `requirements.txt` — runtime dependencies.
 - `render.yaml` — Render deployment config.
 
