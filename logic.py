@@ -45,26 +45,115 @@ def get_info() -> Dict[str, str]:
         "color": "#1d4ed8",
         "head": "smart-caterpillar",
         "tail": "weight",
-        "version": "0.3.2",
+        "version": "0.4.0",
     }
 
 
 def choose_move(game_state: Dict) -> str:
-    """Return the next move using minimax, with model and heuristic fallbacks."""
-    try:
-        move = choose_move_minimax(game_state)
-    except Exception:  # noqa: BLE001 - gameplay must never fail the request
-        move = None
-    if move is not None:
-        return move
+    """Return the next move using safety-first logic only.
 
-    try:
-        move = choose_move_model(game_state)
-    except Exception:  # noqa: BLE001 - a model issue must never break gameplay
-        move = None
-    if move is not None:
-        return move
-    return choose_move_heuristic(game_state)
+    Args:
+        game_state: Battlesnake request payload.
+
+    Returns:
+        Safe move string.
+    """
+    return choose_move_safety_first(game_state)
+
+
+def choose_move_safety_first(game_state: Dict) -> str:
+    """Choose a safe move with simple scoring.
+
+    Args:
+        game_state: Battlesnake request payload.
+
+    Returns:
+        Best safe move, or ``"up"`` only when no safe move exists.
+    """
+    moves = _safe_moves(game_state, game_state["you"]["id"])
+    if not moves:
+        return "up"
+    return max(moves, key=lambda move: _safety_first_score(game_state, move))
+
+
+def _safe_moves(game_state: Dict, snake_id: str) -> List[str]:
+    """List moves that do not immediately hit wall or body.
+
+    Args:
+        game_state: Battlesnake request payload.
+        snake_id: Snake id.
+
+    Returns:
+        Safe move names.
+    """
+    board = game_state["board"]
+    snake = _snake_by_id(game_state, snake_id)
+    if snake is None:
+        return []
+
+    head = (snake["head"]["x"], snake["head"]["y"])
+    blocked = _occupied_cells(board["snakes"]) - _moving_tail_cells(board["snakes"])
+    moves = []
+    for move, (dx, dy) in DIRECTIONS.items():
+        nxt = (head[0] + dx, head[1] + dy)
+        if _in_bounds(nxt, board["width"], board["height"]) and nxt not in blocked:
+            moves.append(move)
+    return moves
+
+
+def _safety_first_score(game_state: Dict, move: str) -> float:
+    """Score a safe move.
+
+    Args:
+        game_state: Battlesnake request payload.
+        move: Candidate safe move.
+
+    Returns:
+        Higher score for safer, roomier, less edge-chasing moves.
+    """
+    board = game_state["board"]
+    you = game_state["you"]
+    width = board["width"]
+    height = board["height"]
+    head = (you["head"]["x"], you["head"]["y"])
+    dx, dy = DIRECTIONS[move]
+    nxt = (head[0] + dx, head[1] + dy)
+    blocked = _occupied_cells(board["snakes"]) - _moving_tail_cells(board["snakes"])
+    space = _flood_fill(nxt, blocked, width, height, limit=width * height)
+    wall_distance = min(nxt[0], width - 1 - nxt[0], nxt[1], height - 1 - nxt[1])
+    exits = _exit_count(nxt, blocked, width, height)
+    foods = [(food["x"], food["y"]) for food in board["food"]]
+    danger = _head_to_head_cells(board["snakes"], you["id"], you["length"])
+
+    score = float(space * 10 + wall_distance * 8 + exits * 6)
+    if nxt in danger:
+        score -= HEAD_TO_HEAD_PENALTY
+    if foods and you["health"] < 70:
+        nearest_food = min(_manhattan(nxt, food) for food in foods)
+        score += (width + height - nearest_food) * 4
+    if nxt in foods and you["health"] < 80:
+        score += 40
+    return score
+
+
+def _exit_count(point: Point, blocked: Set[Point], width: int, height: int) -> int:
+    """Count open neighbor cells.
+
+    Args:
+        point: Board coordinate.
+        blocked: Occupied cells.
+        width: Board width.
+        height: Board height.
+
+    Returns:
+        Number of open cardinal neighbors.
+    """
+    count = 0
+    for dx, dy in DIRECTIONS.values():
+        nxt = (point[0] + dx, point[1] + dy)
+        if _in_bounds(nxt, width, height) and nxt not in blocked:
+            count += 1
+    return count
 
 
 def choose_move_heuristic(game_state: Dict) -> str:

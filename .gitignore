@@ -7,4 +7,3 @@ venv/
 
 # Local Battlesnake CLI output
 logs/
-sandworm/bin/

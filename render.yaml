@@ -7,6 +7,6 @@ services:
     name: battlesnake-ml
     runtime: python
     plan: free
-    buildCommand: make -C sandworm bin/move && pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt
     startCommand: gunicorn backend:app --bind 0.0.0.0:$PORT
     healthCheckPath: /

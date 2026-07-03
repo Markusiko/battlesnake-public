@@ -1,23 +1,23 @@
-# Battlesnake Sandworm Bot
+# Battlesnake Safety Bot
 
 A [Battlesnake](https://play.battlesnake.com) written in Python and Flask. This
-version uses the vendored [Sandworm](sandworm/README.md) C move engine. Python
-keeps the HTTP API and fallback logic.
+version keeps all move logic in `logic.py` and prioritizes not dying to walls or
+body collisions.
 
 ## What It Does
 
 Each turn, `backend.py`:
 
 - Receives a Battlesnake move request through `backend.py`.
-- Sends the raw request JSON to the compiled Sandworm binary.
-- Falls back to Python logic if Sandworm fails or times out.
+- Calls `choose_move()` from `logic.py`.
+- Scores only immediately safe moves.
+- Prefers open space and moves away from walls.
 
 
 ## Files
 
 - `backend.py` — Battlesnake HTTP server with `/`, `/start`, `/move`, and `/end`.
-- `logic.py` — Python fallback logic and snake appearance.
-- `sandworm/` — vendored Sandworm C move engine.
+- `logic.py` — snake appearance and all move logic.
 - `requirements.txt` — runtime dependencies.
 - `render.yaml` — Render deployment config.
 
