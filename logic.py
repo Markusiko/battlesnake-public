@@ -29,6 +29,8 @@ DIRECTIONS: Dict[str, Point] = {
 HEAD_TO_HEAD_PENALTY = 10_000
 # Below this health we start actively steering toward food.
 HUNGRY_THRESHOLD = 50
+# Below this health, eating a safe adjacent food is a survival emergency.
+CRITICAL_FOOD_THRESHOLD = 15
 
 
 def get_info() -> Dict[str, str]:
@@ -133,7 +135,11 @@ def choose_move_strong_heuristic(game_state: Dict) -> Optional[str]:
         if foods:
             nearest_food = min(_manhattan(nxt, f) for f in foods)
             food_closeness = width + height - nearest_food
-            if health < 30:
+            if health <= CRITICAL_FOOD_THRESHOLD:
+                score += food_closeness * 140.0
+                if feats["is_food"] and nxt not in danger and open_space >= my_length and escape >= 1:
+                    score += 25_000.0
+            elif health < 30:
                 score += food_closeness * 95.0
                 score += feats["is_food"] * 1_500.0
             elif health < HUNGRY_THRESHOLD:

@@ -4,7 +4,9 @@ Use this file to propose the next small candidate patch.
 
 ## Arena Interpretation
 
-TBD
+Champion and candidate servers now start independently after copying the shared `backend.py` and `requirements.txt` into both bot directories. The official Battlesnake CLI is still unavailable on PATH, so evaluation used a fallback local 1v1 arena.
+
+The candidate patch targets one observed scoring gap: at health 8, the baseline can choose open space over adjacent safe food on the board edge. In fallback arena games this translated into fewer starvation losses for the candidate.
 
 ## High-Impact Candidate Ideas
 
@@ -18,7 +20,7 @@ TBD
 
 ## Best Next Candidate Patch
 
-TBD
+Promote the current health-critical food candidate after explicit approval to update the champion copy. The next smallest candidate patch should be head-to-head tuning, but only after running the promoted bot against fresh arena scenarios and observing equal-or-longer head collision deaths.
 
 ## Ideas To Avoid For Now
 

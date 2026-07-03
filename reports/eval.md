@@ -49,12 +49,21 @@ battlesnake play -W 11 -H 11 \
 
 | Time | Candidate | Setup | Games | Champion Wins | Candidate Wins | Draws | Avg Turns | Decision |
 |---|---|---|---:|---:|---:|---:|---:|---|
-| TBD | candidate-next | 1v1 | TBD | TBD | TBD | TBD | TBD | TBD |
+| 2026-07-03 | candidate-next | offline smoke only | 0 | 0 | 0 | 0 | N/A | Superseded by server/fallback arena |
+| 2026-07-03 | candidate-next | fallback 1v1 direct-logic arena | 100 | 3 | 27 | 70 | 216.85 | Promote recommended; official CLI absent |
 
 ## Death Patterns
 
-- TBD
+- Shared `backend.py` and `requirements.txt` were copied into both bot directories with user approval.
+- Both servers started: champion on port 8000, candidate on port 8001.
+- `/` responded for both bots.
+- `/move` responded for both bots on the critical-food smoke: champion chose `left`, candidate chose `right`.
+- HTTP smoke latency was about 1.4 ms for both bots.
+- Official `battlesnake` CLI was not found on PATH, so the official CLI arena was not run.
+- Fallback local arena used deterministic 11x11 1v1 direct-logic games with core wall/body/head-to-head/food/starvation rules.
+- Fallback deaths: champion starvation 28, candidate starvation 4.
+- Fallback max direct `choose_move` latency: 3.139 ms; average direct latency was about 0.79 ms per bot.
 
 ## Promotion Recommendation
 
-TBD
+Promote recommended based on server smoke checks and fallback arena evidence. Do not overwrite `battlesnake-champion/logic.py` unless explicitly approved.

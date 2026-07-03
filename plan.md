@@ -14,22 +14,22 @@ Improve the Battlesnake bot safely by keeping a stable champion and testing ever
 
 | Candidate | Status | Change | Decision |
 |---|---|---|---|
-| candidate-next | not started | TBD | TBD |
+| candidate-next | evaluated | health-critical safe-food gate | promote recommended; awaiting explicit champion update approval |
 
 ## Main Checklist
 
-- [ ] Confirm champion directory exists.
-- [ ] Confirm candidate directory exists.
-- [ ] Confirm champion is not edited directly.
-- [ ] Start champion on port 8000.
-- [ ] Start candidate on port 8001.
-- [ ] Run syntax checks on candidate.
-- [ ] Run smoke checks on candidate.
-- [ ] Run 1v1 arena games.
+- [x] Confirm champion directory exists.
+- [x] Confirm candidate directory exists.
+- [x] Confirm champion is not edited directly.
+- [x] Start champion on port 8000.
+- [x] Start candidate on port 8001.
+- [x] Run syntax checks on candidate.
+- [x] Run smoke checks on candidate.
+- [x] Run 1v1 arena games.
 - [ ] Run multi-snake arena games if time allows.
-- [ ] Record arena results in `reports/eval.md`.
-- [ ] Review research notes in `reports/research.md`.
-- [ ] Promote or reject candidate.
+- [x] Record arena results in `reports/eval.md`.
+- [x] Review research notes in `reports/research.md`.
+- [x] Promote or reject candidate.
 - [ ] If promoted, tag/update current champion.
 - [ ] Freeze final champion before deployment.
 
@@ -38,15 +38,15 @@ Improve the Battlesnake bot safely by keeping a stable champion and testing ever
 | Agent | Scope | Status | Output |
 |---|---|---|---|
 | Coordinator / Champion Keeper | integration and promotion | active | `plan.md` |
-| Candidate Coder | `battlesnake-candidate/logic.py` | pending | candidate patch |
-| Arena Evaluator | local games | pending | `reports/eval.md` |
-| Strategy Researcher | tactical ideas | pending | `reports/research.md` |
+| Candidate Coder | `battlesnake-candidate/logic.py` | complete | critical food gate patch |
+| Arena Evaluator | local games | complete | `reports/eval.md` |
+| Strategy Researcher | tactical ideas | complete | `reports/research.md` |
 
 ## Candidate Experiments
 
 | Time | Candidate | Change | Games vs Champion | Result | Decision | Notes |
 |---|---|---|---:|---|---|---|
-| TBD | candidate-next | TBD | TBD | TBD | TBD | TBD |
+| 2026-07-03 | candidate-next | health-critical safe-food gate | 100 fallback | candidate 27, champion 3, draws 70 | promote recommended | official CLI unavailable; fallback arena shows fewer candidate starvation losses |
 
 ## Promotion Rules
 
