@@ -1,8 +1,8 @@
 """Model-backed move-selection logic for the Battlesnake.
 
-The served policy uses a linear ranking model, scores each legal move,
-and returns the highest-scoring direction. A compact heuristic remains as a
-fallback so gameplay still returns a legal move if model scoring fails.
+The served policy uses a linear ranking model, scores each safe move, and returns
+the highest-scoring direction. A compact heuristic remains as a fallback so
+gameplay still returns a legal move if model scoring fails.
 
 Board coordinates: ``(0, 0)`` is the bottom-left corner.
   up    -> y + 1
@@ -39,7 +39,7 @@ def get_info() -> Dict[str, str]:
         "color": "#6434eb",
         "head": "smart-caterpillar",
         "tail": "weight",
-        "version": "0.1.0",
+        "version": "0.2.0",
     }
 
 
@@ -65,52 +65,88 @@ def choose_move_heuristic(game_state: Dict) -> str:
     my_length: int = you["length"]
     health: int = you["health"]
 
-    occupied = _occupied_cells(board["snakes"])
+    candidates = _safe_moves(game_state) or _legal_moves(game_state)
+    if not candidates:
+        # No safe move found -> we're cornered. Move up and hope for the best.
+        return "up"
+
     danger = _head_to_head_cells(board["snakes"], you["id"], my_length)
     foods = [(f["x"], f["y"]) for f in board["food"]]
 
     best_move = None
     best_score = float("-inf")
 
-    for move, (dx, dy) in DIRECTIONS.items():
+    for move in candidates:
+        dx, dy = DIRECTIONS[move]
         nxt = (head[0] + dx, head[1] + dy)
-
-        if not _in_bounds(nxt, width, height):
-            continue
-        if nxt in occupied:
-            continue
+        occupied = _blocking_cells_for_move(game_state, move)
 
         # Reachable open space from this cell. If we can't fit our own body in
         # the space we'd be moving into, we're about to trap ourselves.
         space = _flood_fill(nxt, occupied, width, height, limit=my_length + 1)
         score = float(space)
 
+        # Prefer moves that keep options available on the following turn.
+        score += _followup_count(game_state, move) * 3
+
         if nxt in danger:
             score -= HEAD_TO_HEAD_PENALTY
 
         # When hungry, nudge toward the closest food.
         if foods and health < HUNGRY_THRESHOLD:
-            nearest = min(_manhattan(nxt, f) for f in foods)
+            nearest = min(manhattan(nxt, f) for f in foods)
             score += (width + height - nearest) * 2
+            if nxt in foods:
+                score += 10
 
         if score > best_score:
             best_score = score
             best_move = move
 
-    # No safe move found -> we're cornered. Move up and hope for the best.
     return best_move or "up"
 
 
-def _occupied_cells(snakes: List[Dict]) -> Set[Point]:
-    """All cells currently filled by any snake's body.
+def _point(cell: Dict) -> Point:
+    return cell["x"], cell["y"]
 
-    We keep tails occupied too; they only free up *next* turn and treating them
-    as solid is the conservative, safe choice for a base bot.
-    """
+
+def _next_point(head: Point, move: str) -> Point:
+    dx, dy = DIRECTIONS[move]
+    return head[0] + dx, head[1] + dy
+
+
+def _food_cells(board: Dict) -> Set[Point]:
+    return {_point(food) for food in board["food"]}
+
+
+def _occupied_cells(snakes: List[Dict]) -> Set[Point]:
+    """All cells currently filled by any snake's body."""
     occupied: Set[Point] = set()
     for snake in snakes:
         for seg in snake["body"]:
-            occupied.add((seg["x"], seg["y"]))
+            occupied.add(_point(seg))
+    return occupied
+
+
+def _blocking_cells_for_move(game_state: Dict, move: str) -> Set[Point]:
+    """Cells that should be treated as blocked for this specific move.
+
+    Battlesnake tails usually move away on the next turn. The previous version
+    treated our own tail as always blocked, which made the bot miss safe escapes
+    through its tail. We now free our own tail when the candidate move does not
+    eat food; enemy tails remain blocked because their next moves are unknown.
+    """
+    board = game_state["board"]
+    you = game_state["you"]
+    occupied = _occupied_cells(board["snakes"])
+
+    if you["body"]:
+        head = _point(you["head"])
+        nxt = _next_point(head, move)
+        my_tail = _point(you["body"][-1])
+        if nxt not in _food_cells(board):
+            occupied.discard(my_tail)
+
     return occupied
 
 
@@ -118,8 +154,7 @@ def _head_to_head_cells(snakes: List[Dict], my_id: str, my_length: int) -> Set[P
     """Cells adjacent to enemy heads that are >= our length.
 
     Moving onto one of these risks a head-to-head collision we would lose or
-    tie, so they are heavily penalized (but not forbidden — sometimes it's the
-    only move).
+    tie, so safe move selection treats these cells as avoidable danger.
     """
     danger: Set[Point] = set()
     for snake in snakes:
@@ -131,6 +166,104 @@ def _head_to_head_cells(snakes: List[Dict], my_id: str, my_length: int) -> Set[P
         for dx, dy in DIRECTIONS.values():
             danger.add((ehead[0] + dx, ehead[1] + dy))
     return danger
+
+
+def _legal_moves(game_state: Dict) -> List[str]:
+    """Moves that do not immediately hit a wall or a blocked body cell."""
+    board = game_state["board"]
+    width, height = board["width"], board["height"]
+    head = (game_state["you"]["head"]["x"], game_state["you"]["head"]["y"])
+
+    legal: List[str] = []
+    for move in DIRECTIONS:
+        nxt = _next_point(head, move)
+        if not _in_bounds(nxt, width, height):
+            continue
+        if nxt in _blocking_cells_for_move(game_state, move):
+            continue
+        legal.append(move)
+    return legal
+
+
+def _safe_moves(game_state: Dict) -> List[str]:
+    """Legal moves filtered through tactical safety checks.
+
+    The model is still allowed to rank moves, but only after we remove avoidable
+    head-to-head losses and one-move traps. If every move is risky, the function
+    keeps the least-bad legal candidates instead of returning nothing.
+    """
+    legal = _legal_moves(game_state)
+    if not legal:
+        return []
+
+    board = game_state["board"]
+    you = game_state["you"]
+    head = _point(you["head"])
+    danger = _head_to_head_cells(board["snakes"], you["id"], you["length"])
+
+    non_h2h = [move for move in legal if _next_point(head, move) not in danger]
+    candidates = non_h2h or legal
+
+    with_followup = [move for move in candidates if _has_followup_move(game_state, move)]
+    return with_followup or candidates
+
+
+def _has_followup_move(game_state: Dict, move: str) -> bool:
+    return _followup_count(game_state, move) > 0
+
+
+def _followup_count(game_state: Dict, move: str) -> int:
+    simulated = _simulate_you_after_move(game_state, move)
+    return len(_legal_moves(simulated))
+
+
+def _simulate_you_after_move(game_state: Dict, move: str) -> Dict:
+    """Minimal one-turn simulation for our own snake.
+
+    Enemy movement is intentionally not guessed here. The goal is only to catch
+    obvious self-traps where our next head position has no legal continuation.
+    """
+    board = game_state["board"]
+    you = game_state["you"]
+
+    head = _point(you["head"])
+    nxt = _next_point(head, move)
+    foods = _food_cells(board)
+    ate_food = nxt in foods
+
+    old_body = [_point(seg) for seg in you["body"]]
+    new_body_points = [nxt] + old_body
+    if not ate_food:
+        new_body_points = new_body_points[:-1]
+
+    new_body = [{"x": x, "y": y} for x, y in new_body_points]
+    new_you = {
+        **you,
+        "head": {"x": nxt[0], "y": nxt[1]},
+        "body": new_body,
+        "length": len(new_body),
+        "health": 100 if ate_food else max(you["health"] - 1, 0),
+    }
+
+    new_snakes = [
+        new_you if snake["id"] == you["id"] else snake
+        for snake in board["snakes"]
+    ]
+    new_food = [
+        food
+        for food in board["food"]
+        if (food["x"], food["y"]) != nxt
+    ]
+
+    return {
+        **game_state,
+        "you": new_you,
+        "board": {
+            **board,
+            "snakes": new_snakes,
+            "food": new_food,
+        },
+    }
 
 
 def _flood_fill(start: Point, occupied: Set[Point], width: int, height: int, limit: int) -> int:
@@ -201,10 +334,9 @@ def _candidate_features(state: Dict, move: str) -> Dict[str, float]:
     my_length = you["length"]
     health = you["health"]
 
-    dx, dy = DIRECTIONS[move]
-    nxt = (head[0] + dx, head[1] + dy)
+    nxt = _next_point(head, move)
 
-    occupied = _occupied_cells(board["snakes"])
+    occupied = _blocking_cells_for_move(state, move)
     danger = _head_to_head_cells(board["snakes"], you["id"], my_length)
     foods = [(f["x"], f["y"]) for f in board["food"]]
     enemies = [s for s in board["snakes"] if s["id"] != you["id"]]
@@ -249,7 +381,7 @@ def _candidate_features(state: Dict, move: str) -> Dict[str, float]:
     }
 
 
-# --- Model -----------------------------------------------------
+# --- Model -------------------------------------
 # Embedded standardized linear model.
 
 _MODEL: Dict = {
@@ -319,13 +451,13 @@ _MODEL: Dict = {
 
 
 def choose_move_model(game_state: Dict) -> Optional[str]:
-    """Score each legal move with the trained model; return the best.
+    """Score each safe move with the trained model; return the best.
 
     Returns ``None`` (so the caller falls back to the heuristic) if the model
     isn't available or the snake is trapped with no legal move.
     """
-    legal = _legal_moves(game_state)
-    if not legal:
+    candidates = _safe_moves(game_state) or _legal_moves(game_state)
+    if not candidates:
         return None
 
     names = _MODEL["feature_names"]
@@ -335,7 +467,7 @@ def choose_move_model(game_state: Dict) -> Optional[str]:
     intercept = _MODEL["intercept"]
 
     best_move, best_score = None, float("-inf")
-    for move in legal:
+    for move in candidates:
         feats = _candidate_features(game_state, move)
         score = intercept
         for i, name in enumerate(names):
@@ -344,16 +476,3 @@ def choose_move_model(game_state: Dict) -> Optional[str]:
         if score > best_score:
             best_score, best_move = score, move
     return best_move
-
-
-def _legal_moves(game_state: Dict) -> List[str]:
-    board = game_state["board"]
-    width, height = board["width"], board["height"]
-    head = (game_state["you"]["head"]["x"], game_state["you"]["head"]["y"])
-    occupied = _occupied_cells(board["snakes"])
-    return [
-        move
-        for move, (dx, dy) in DIRECTIONS.items()
-        if _in_bounds((head[0] + dx, head[1] + dy), width, height)
-        and (head[0] + dx, head[1] + dy) not in occupied
-    ]
